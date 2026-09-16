@@ -11,6 +11,7 @@ include_directories(include)
 add_executable(thermostat
     src/main.c
     src/hal_sim.c
+    src/sensor_adc.c
     src/thermostat_logic.c
 )
 
@@ -23,3 +24,11 @@ add_executable(test_thermostat_logic
 )
 
 add_test(NAME thermostat_logic COMMAND test_thermostat_logic)
+
+# Linked without hal_sim.c: proves the ADC conversion has no I/O dependency.
+add_executable(test_sensor_adc
+    test/test_sensor_adc.c
+    src/sensor_adc.c
+)
+
+add_test(NAME sensor_adc COMMAND test_sensor_adc)

@@ -77,6 +77,19 @@ static void test_init_clears_fault(void) {
     assert(Thermostat_IsFaulted() == false);
 }
 
+static void test_force_fault_latches_like_a_bad_reading(void) {
+    Thermostat_Init();
+    assert(Thermostat_IsFaulted() == false);
+
+    Thermostat_ForceFault();
+    assert(Thermostat_IsFaulted() == true);
+    assert(Thermostat_ComputeControl(THERMOSTAT_SETPOINT_LOW_C - 0.1f) == false);
+    assert(Thermostat_IsFaulted() == true);
+
+    Thermostat_Init();
+    assert(Thermostat_IsFaulted() == false);
+}
+
 int main(void) {
     test_starts_off_and_heats_below_low_setpoint();
     test_stays_on_through_deadband();
@@ -86,6 +99,7 @@ int main(void) {
     test_out_of_range_reading_trips_fault();
     test_fault_latches_despite_later_good_readings();
     test_init_clears_fault();
+    test_force_fault_latches_like_a_bad_reading();
 
     printf("All thermostat_logic tests passed.\n");
     return 0;

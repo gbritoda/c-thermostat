@@ -17,6 +17,10 @@ bool Thermostat_IsFaulted(void) {
     return current_state == STATE_FAULT;
 }
 
+void Thermostat_ForceFault(void) {
+    current_state = STATE_FAULT;
+}
+
 bool Thermostat_ComputeControl(float current_temp) {
     // Latched fault: once tripped, stay off until Thermostat_Init().
     if (current_state == STATE_FAULT) {

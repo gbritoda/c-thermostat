@@ -28,4 +28,13 @@ bool Thermostat_ComputeControl(float current_temp);
  */
 bool Thermostat_IsFaulted(void);
 
+/**
+ * @brief Latch the controller into a fault state directly.
+ *
+ * For faults detected below the Celsius reading itself (e.g. a corrupted
+ * sensor frame, or a rail-stuck ADC count); same latched behaviour as a
+ * fault detected inside Thermostat_ComputeControl.
+ */
+void Thermostat_ForceFault(void);
+
 #endif // THERMOSTAT_LOGIC_H

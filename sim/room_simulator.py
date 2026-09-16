@@ -9,23 +9,55 @@ heater is on.
 
     T[n+1] = T[n] + dt * (heater_gain * heater_on - loss_coeff * (T[n] - T_ambient))
 
-Each tick, the current room temperature is written to the thermostat
-binary's stdin and the resulting HEATER_ON/HEATER_OFF/FAULT status is read
-back from its stdout, per the wire protocol documented in include/hal.h.
+Each tick, the current room temperature is converted to a raw 12-bit ADC
+count and sent to the thermostat binary as a 4-byte framed sensor packet
+(SYNC, COUNTS_HI, COUNTS_LO, CHECKSUM) on stdin; the resulting
+HEATER_ON/HEATER_OFF/FAULT status is read back as a text line from its
+stdout. See the wire protocol documented in include/hal.h.
 
---fault-tick optionally injects a single out-of-range sensor glitch (a
-garbled reading, not a change to the room's real temperature) to exercise
-the controller's latched fault path.
+--fault-tick optionally corrupts a single tick's frame to exercise the
+controller's latched fault path -- see --fault-mode for the three ways a
+real sensor link can fail that this simulates.
 """
 import argparse
 import csv
+import struct
 import subprocess
 import sys
 from pathlib import Path
 
+# Must stay in sync with include/sensor_adc.h and include/hal.h.
+FRAME_SYNC = 0xAA
+ADC_COUNTS_MAX = 4095
+ADC_RAIL_GUARD_COUNTS = 16
+SENSOR_MIN_C = -40.0
+SENSOR_MAX_C = 85.0
+
+
+def celsius_to_counts(temp_c):
+    """Inverse of SensorAdc_ConvertToCelsius() in src/sensor_adc.c."""
+    span_counts = ADC_COUNTS_MAX - 2 * ADC_RAIL_GUARD_COUNTS
+    frac = (temp_c - SENSOR_MIN_C) / (SENSOR_MAX_C - SENSOR_MIN_C)
+    counts = ADC_RAIL_GUARD_COUNTS + frac * span_counts
+    # Clamp to the valid (non-fault) span so normal physics never
+    # accidentally trips a rail fault on its own.
+    counts = max(ADC_RAIL_GUARD_COUNTS + 1, min(ADC_COUNTS_MAX - ADC_RAIL_GUARD_COUNTS - 1, round(counts)))
+    return counts
+
+
+def build_frame(counts, corrupt_checksum=False):
+    hi = (counts >> 8) & 0xFF
+    lo = counts & 0xFF
+    checksum = FRAME_SYNC ^ hi ^ lo
+    if corrupt_checksum:
+        checksum ^= 0xFF
+    return struct.pack(">BHB", FRAME_SYNC, counts, checksum)
+
 
 def parse_args():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "--binary",
         default=str(Path(__file__).resolve().parent.parent / "build" / "thermostat"),
@@ -46,13 +78,17 @@ def parse_args():
         "--fault-tick",
         type=int,
         default=-1,
-        help="Tick at which to inject a single out-of-range sensor glitch (-1 disables)",
+        help="Tick at which to inject a sensor fault via --fault-mode (-1 disables)",
     )
     parser.add_argument(
-        "--fault-value",
-        type=float,
-        default=999.0,
-        help="Out-of-range reading to send at --fault-tick",
+        "--fault-mode",
+        choices=["checksum", "rail-low", "rail-high"],
+        default="checksum",
+        help=(
+            "checksum: corrupt one frame's checksum (link glitch); "
+            "rail-low/rail-high: send an ADC count pinned at a rail "
+            "(disconnected/shorted sensor)"
+        ),
     )
     return parser.parse_args()
 
@@ -67,8 +103,7 @@ def main():
         [str(binary_path)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        text=True,
-        bufsize=1,  # line buffered
+        bufsize=0,
     )
 
     temp = args.start_temp
@@ -76,18 +111,24 @@ def main():
     print(f"{'tick':>5} {'temp_C':>8} {'status':>10}")
     try:
         for tick in range(args.ticks):
-            # A fault-injected reading is a garbled sample from the sensor,
-            # not a real change in room temperature -- the physics below
-            # always advances from the true `temp`, never from this.
-            reported_temp = args.fault_value if tick == args.fault_tick else temp
-            proc.stdin.write(f"{reported_temp:.4f}\n")
+            if tick == args.fault_tick:
+                if args.fault_mode == "checksum":
+                    frame = build_frame(celsius_to_counts(temp), corrupt_checksum=True)
+                elif args.fault_mode == "rail-low":
+                    frame = build_frame(0)
+                else:  # rail-high
+                    frame = build_frame(ADC_COUNTS_MAX)
+            else:
+                frame = build_frame(celsius_to_counts(temp))
+
+            proc.stdin.write(frame)
             proc.stdin.flush()
 
             response = proc.stdout.readline()
             if not response:
                 print("thermostat process closed its output early", file=sys.stderr)
                 break
-            status = response.strip()
+            status = response.decode("ascii").strip()
             heater_on = status == "HEATER_ON"
 
             print(f"{tick:5d} {temp:8.3f} {status:>10}")
